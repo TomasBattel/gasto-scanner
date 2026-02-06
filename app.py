@@ -22,7 +22,8 @@ genai.configure(api_key=api_key)
 
 def analizar_ticket(image):
     """Envía la imagen a Gemini Flash y pide un JSON estructurado"""
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # CORRECCIÓN AQUÍ: Usamos 'gemini-1.5-flash-latest' para evitar el error 404
+    model = genai.GenerativeModel('gemini-1.5-flash-latest')
     
     # Prompt optimizado para tus gastos
     prompt = """
@@ -41,13 +42,13 @@ def analizar_ticket(image):
     """
     
     with st.spinner('🤖 Gemini está leyendo el ticket...'):
-        response = model.generate_content([prompt, image])
         try:
+            response = model.generate_content([prompt, image])
             # Limpiar posible markdown ```json ... ```
             text = response.text.replace('```json', '').replace('```', '').strip()
             return json.loads(text)
-        except:
-            st.error("No pude entender la respuesta de la IA. Intentá de nuevo.")
+        except Exception as e:
+            st.error(f"Error al procesar: {e}")
             return None
 
 # Interfaz de carga
@@ -72,9 +73,22 @@ if uploaded_file is not None:
                 with st.form("edit_form"):
                     fecha = st.text_input("Fecha", value=datos.get("fecha"))
                     monto = st.number_input("Monto", value=datos.get("monto"))
-                    moneda = st.selectbox("Moneda", ["ARS", "USD"], index=0 if datos.get("moneda") == "ARS" else 1)
+                    
+                    idx_moneda = 0
+                    if datos.get("moneda") == "USD": idx_moneda = 1
+                    moneda = st.selectbox("Moneda", ["ARS", "USD"], index=idx_moneda)
+                    
                     desc = st.text_input("Descripción", value=datos.get("descripcion"))
-                    cat = st.selectbox("Categoría", ["Comida", "Servicios", "Supermercado", "Transporte", "Otros"], index=0) # Acá podés ajustar tus categorías reales
+                    
+                    # Lista de categorías (Ajustala a las que usás en tu Excel)
+                    categorias = ["Comida", "Servicios", "Supermercado", "Transporte", "Otros"]
+                    # Intenta encontrar la categoría que dijo la IA en tu lista, sino pone la primera
+                    cat_val = datos.get("categoria", "Otros")
+                    idx_cat = 0
+                    if cat_val in categorias:
+                        idx_cat = categorias.index(cat_val)
+                    
+                    cat = st.selectbox("Categoría", categorias, index=idx_cat)
                     
                     submitted = st.form_submit_button("💾 Guardar en Sheets")
                     
