@@ -3,7 +3,6 @@ import google.generativeai as genai
 from PIL import Image
 import json
 import os
-from datetime import datetime
 
 # Configuración de página
 st.set_page_config(page_title="GastoScanner", page_icon="🧾")
@@ -22,8 +21,8 @@ genai.configure(api_key=api_key)
 
 def analizar_ticket(image):
     """Envía la imagen a Gemini Flash y pide un JSON estructurado"""
-    # CORRECCIÓN AQUÍ: Usamos 'gemini-1.5-flash-latest' para evitar el error 404
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    # CORRECCIÓN: Usamos la versión exacta '001' que es la estable
+    model = genai.GenerativeModel('gemini-1.5-flash-001')
     
     # Prompt optimizado para tus gastos
     prompt = """
@@ -80,9 +79,8 @@ if uploaded_file is not None:
                     
                     desc = st.text_input("Descripción", value=datos.get("descripcion"))
                     
-                    # Lista de categorías (Ajustala a las que usás en tu Excel)
+                    # Lista de categorías
                     categorias = ["Comida", "Servicios", "Supermercado", "Transporte", "Otros"]
-                    # Intenta encontrar la categoría que dijo la IA en tu lista, sino pone la primera
                     cat_val = datos.get("categoria", "Otros")
                     idx_cat = 0
                     if cat_val in categorias:
