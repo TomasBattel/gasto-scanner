@@ -146,4 +146,14 @@ if st.session_state.datos_ticket:
         
         submitted = st.form_submit_button("💾 Guardar en Google Sheets")
         
-        if submitted
+        if submitted:
+            datos_finales = {
+                "fecha": fecha, "monto": monto, "moneda": moneda,
+                "categoria": categoria, "descripcion": desc, "metodo_pago": pago
+            }
+            with st.spinner("Guardando en Drive..."):
+                if guardar_en_sheets(datos_finales):
+                    st.balloons()
+                    st.success("¡Guardado exitosamente!")
+                    st.session_state.datos_ticket = None # Limpiar memoria
+                    st.rerun()
