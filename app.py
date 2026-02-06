@@ -19,55 +19,72 @@ if not api_key:
     st.error("❌ ERROR CRÍTICO: Falta la variable `GEMINI_API_KEY`.")
     st.stop()
 
+# Advertencia si falta Sheets, pero deja seguir
 if not creds_sheets:
-    st.warning("⚠️ ATENCIÓN: Falta la variable `GOOGLE_SHEETS_CREDENTIALS`. Podrás escanear, pero NO guardar.")
+    st.warning("⚠️ Falta `GOOGLE_SHEETS_CREDENTIALS`. Podrás escanear, pero NO guardar.")
 
 genai.configure(api_key=api_key)
 
 # --- FUNCIONES ---
-def analizar_ticket(image):
-    """Analiza la imagen usando el mejor modelo disponible."""
-    # Selección de modelo "todo terreno"
-    modelo_nombre = 'gemini-1.5-flash' # Default
+def conseguir_nombre_modelo():
+    """Busca el mejor modelo disponible, priorizando los nuevos gratuitos."""
     try:
-        # Intentamos buscar si hay uno mejor disponible (ej: 1.5 Pro o 2.0 experimental)
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                if 'gemini-1.5-flash' in m.name: modelo_nombre = m.name
-    except Exception as e:
-        st.warning(f"No pude listar modelos, usando {modelo_nombre} por defecto. Error: {e}")
+        modelos = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+        
+        # Lista de prioridad: buscamos del más nuevo/potente gratis al más viejo
+        preferencias = [
+            'gemini-2.5-flash', # El que te funcionó antes
+            'gemini-2.0-flash-exp',
+            'gemini-1.5-pro-latest',
+            'gemini-1.5-flash-latest',
+            'gemini-1.5-flash'
+        ]
+        
+        # Devuelve el primero de la lista de preferencias que exista en tu cuenta
+        for pref in preferencias:
+            for m in modelos:
+                if pref in m: return m
+                
+        # Si no encuentra ninguno de los preferidos, devuelve el primero que haya
+        if modelos: return modelos[0]
+        
+    except:
+        pass
+    # Último recurso si todo falla
+    return 'gemini-1.5-flash'
 
+def analizar_ticket(image):
+    # Usamos el "detective" para elegir el modelo
+    modelo_nombre = conseguir_nombre_modelo()
     model = genai.GenerativeModel(modelo_nombre)
     
     prompt = """
     Analiza este comprobante de pago. Responde SOLO con un JSON válido.
     Estructura: {"fecha": "DD/MM/YYYY", "monto": 0.00, "moneda": "ARS", "descripcion": "Texto", "categoria": "Otros", "metodo_pago": "Efectivo"}
     Si no encuentras un dato, pon null.
+    Use punto para decimales.
     """
     
     try:
         with st.spinner(f"🧠 Analizando con {modelo_nombre}..."):
             response = model.generate_content([prompt, image])
-            # Limpieza quirúrgica del JSON
             texto_limpio = response.text.replace('```json', '').replace('```', '').strip()
             return json.loads(texto_limpio)
     except Exception as e:
-        st.error(f"❌ Error en la IA: {str(e)}")
+        st.error(f"❌ Error en la IA ({modelo_nombre}): {str(e)}")
         return None
 
 def guardar_en_sheets(datos):
-    """Guarda los datos en la hoja de cálculo."""
     if not creds_sheets:
-        st.error("No hay credenciales configuradas en Coolify.")
+        st.error("No hay credenciales de Sheets configuradas.")
         return False
-        
     try:
         creds_dict = json.loads(creds_sheets)
         scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         
-        # IMPORTANTE: Cambiá "Control de Gastos" por el nombre REAL de tu archivo si es distinto
+        # *** ASEGURATE QUE ESTE NOMBRE SEA CORRECTO ***
         sheet = client.open("Control de Gastos").worksheet("Gastos Mensuales")
         
         fila = [
@@ -84,56 +101,49 @@ def guardar_en_sheets(datos):
         st.error(f"❌ Error al guardar en Excel: {str(e)}")
         return False
 
-# --- INTERFAZ CON MEMORIA (SESSION STATE) ---
+# --- INTERFAZ CON MEMORIA ---
 if 'datos_ticket' not in st.session_state:
     st.session_state.datos_ticket = None
 
 uploaded_file = st.file_uploader("Subí tu comprobante", type=["jpg", "png", "jpeg", "pdf"])
 
 if uploaded_file:
-    # Mostrar imagen
     if uploaded_file.type == "application/pdf":
         images = convert_from_bytes(uploaded_file.read())
         img_show = images[0]
-        st.image(img_show, caption='PDF Página 1', width=300)
+        st.image(img_show, caption='PDF', width=300)
         uploaded_file.seek(0)
     else:
         img_show = Image.open(uploaded_file)
         st.image(img_show, caption='Comprobante', width=300)
 
-    # Botón de Análisis
     if st.button("✨ Analizar Recibo", type="primary"):
         resultado = analizar_ticket(img_show)
         if resultado:
-            st.session_state.datos_ticket = resultado # Guardamos en memoria
-            st.rerun() # Recargamos para mostrar el formulario
+            st.session_state.datos_ticket = resultado
+            st.rerun()
 
-# Si hay datos en memoria, mostramos el formulario de guardado
+# Formulario de guardado (solo si hay datos en memoria)
 if st.session_state.datos_ticket:
     st.divider()
-    st.success("✅ ¡Información extraída!")
+    st.success("✅ Ticket leído. Revisá y guardá.")
     
     with st.form("form_guardado"):
         col1, col2 = st.columns(2)
         d = st.session_state.datos_ticket
         
-        fecha = col1.text_input("Fecha", value=d.get("fecha") or "")
-        monto = col2.number_input("Monto", value=float(d.get("monto") or 0))
+        # Manejo seguro de valores nulos para evitar errores en los inputs
+        fecha_val = d.get("fecha") if d.get("fecha") else ""
+        monto_val = float(d.get("monto")) if d.get("monto") else 0.0
+        desc_val = d.get("descripcion") if d.get("descripcion") else ""
+
+        fecha = col1.text_input("Fecha", value=fecha_val)
+        monto = col2.number_input("Monto ($)", value=monto_val, format="%.2f")
         moneda = col1.selectbox("Moneda", ["ARS", "USD"], index=0 if d.get("moneda") == "ARS" else 1)
         categoria = col2.selectbox("Categoría", ["Comida", "Servicios", "Supermercado", "Transporte", "Otros"], index=4)
-        desc = st.text_input("Descripción", value=d.get("descripcion") or "")
-        pago = st.selectbox("Método Pago", ["Efectivo", "Debito", "Credito", "MP", "Transferencia"], index=4)
+        desc = st.text_input("Descripción", value=desc_val)
+        pago = st.selectbox("Método Pago", ["Efectivo", "Debito", "Credito", "MP", "Transferencia"], index=1)
         
         submitted = st.form_submit_button("💾 Guardar en Google Sheets")
         
-        if submitted:
-            datos_finales = {
-                "fecha": fecha, "monto": monto, "moneda": moneda,
-                "categoria": categoria, "descripcion": desc, "metodo_pago": pago
-            }
-            if guardar_en_sheets(datos_finales):
-                st.balloons()
-                st.success("Guardado exitosamente.")
-                st.session_state.datos_ticket = None # Limpiar memoria
-            else:
-                st.error("Falló el guardado. Revisá los logs.")
+        if submitted
