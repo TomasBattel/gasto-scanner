@@ -4,131 +4,131 @@ from PIL import Image
 from pdf2image import convert_from_bytes
 import json
 import os
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from datetime import datetime
 
 # Configuración de página
 st.set_page_config(page_title="GastoScanner", page_icon="🧾")
 st.title("🧾 GastoScanner")
-st.markdown("Subí tu comprobante (Foto o PDF) para procesarlo con IA.")
 
-# Configurar API
+# --- CONFIGURACIÓN GEMINI ---
 api_key = os.getenv("GEMINI_API_KEY")
 if not api_key:
-    st.error("⚠️ Falta la API Key de Gemini.")
+    st.error("⚠️ Falta GEMINI_API_KEY.")
     st.stop()
 
 genai.configure(api_key=api_key)
 
-def conseguir_mejor_modelo():
-    """Busca automáticamente qué modelo gratuito está disponible en tu cuenta"""
+# --- CONFIGURACIÓN GOOGLE SHEETS ---
+def guardar_en_sheets(datos):
+    """Conecta con Google Sheets y guarda la fila"""
     try:
-        st.toast("🔍 Buscando modelos disponibles...", icon="🤖")
-        modelos_disponibles = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                modelos_disponibles.append(m.name)
-        
-        # Lógica de prioridad: Buscamos el mejor modelo GRATUITO disponible
-        # 1. Gemini 1.5 Flash (El ideal)
-        for m in modelos_disponibles:
-            if 'gemini-1.5-flash' in m and '8b' not in m: return m
-        
-        # 2. Gemini 1.5 Pro (Si tenés suerte y está gratis)
-        for m in modelos_disponibles:
-            if 'gemini-1.5-pro' in m: return m
-            
-        # 3. Gemini Pro Vision (Versión anterior pero sirve)
-        for m in modelos_disponibles:
-            if 'vision' in m: return m
+        # Leemos el JSON de credenciales desde la variable de entorno
+        creds_json_str = os.getenv("GOOGLE_SHEETS_CREDENTIALS")
+        if not creds_json_str:
+            st.error("❌ Falta la variable GOOGLE_SHEETS_CREDENTIALS en Coolify.")
+            return False
 
-        # 4. Lo que sea que haya
-        if modelos_disponibles: return modelos_disponibles[0]
+        # Parseamos el string JSON a un diccionario
+        creds_dict = json.loads(creds_json_str)
         
-        return None
+        # Definimos el alcance
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        
+        # Autenticación
+        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+        client = gspread.authorize(creds)
+        
+        # Abrir la hoja de cálculo.
+        # IMPORTANTE: Asegurate que el nombre sea EXACTO al de tu archivo en Drive
+        sheet = client.open("Control de Gastos").worksheet("Gastos Mensuales")
+        
+        # Preparar la fila. El orden DEBE COINCIDIR con tus columnas en el Excel.
+        # Ejemplo: Fecha, Categoría, Monto, Moneda, Descripción, Metodo Pago
+        # Ajustá este orden según tu planilla real.
+        fila = [
+            datos.get("fecha", ""),
+            datos.get("categoria", ""),
+            datos.get("monto", 0),
+            datos.get("moneda", "ARS"),
+            datos.get("descripcion", ""),
+            datos.get("metodo_pago", "")
+        ]
+        
+        sheet.append_row(fila)
+        return True
+        
     except Exception as e:
-        st.error(f"Error buscando modelos: {e}")
-        return None
+        st.error(f"Error guardando en Sheets: {e}")
+        return False
 
-# Inicializamos el modelo una sola vez
-if "nombre_modelo" not in st.session_state:
-    st.session_state.nombre_modelo = conseguir_mejor_modelo()
-
-if not st.session_state.nombre_modelo:
-    st.error("❌ No encontré ningún modelo disponible en tu cuenta. Chequeá tu API Key.")
-    st.stop()
-
-# Mostramos qué modelo eligió (para que sepas)
-st.caption(f"✅ Usando modelo: `{st.session_state.nombre_modelo}`")
-
+# --- LÓGICA DE IA ---
 def analizar_ticket(image):
-    model = genai.GenerativeModel(st.session_state.nombre_modelo)
+    # Buscamos modelo disponible
+    modelo_usar = 'gemini-1.5-flash' # Default seguro
+    try:
+        for m in genai.list_models():
+             if 'gemini-1.5-flash' in m.name and '8b' not in m.name: modelo_usar = m.name
+    except: pass
+    
+    model = genai.GenerativeModel(modelo_usar)
     
     prompt = """
-    Analiza este comprobante de pago y extrae la siguiente información en formato JSON puro.
-    Si algún dato no aparece, usa null.
-    
-    Estructura JSON:
+    Analiza este comprobante. Extrae JSON:
     {
         "fecha": "DD/MM/YYYY",
         "monto": 0.00,
         "moneda": "ARS" o "USD",
         "descripcion": "Texto breve",
         "categoria": "Comida, Servicios, Supermercado, Transporte, Otros",
-        "metodo_pago": "Visa, Efectivo, MP, etc."
+        "metodo_pago": "Efectivo, Debito, Credito, MP"
     }
     """
-    
-    with st.spinner(f'🤖 Procesando con {st.session_state.nombre_modelo}...'):
+    with st.spinner(f'🤖 Procesando...'):
         try:
             response = model.generate_content([prompt, image])
             text = response.text.replace('```json', '').replace('```', '').strip()
             return json.loads(text)
-        except Exception as e:
-            st.error(f"Error al procesar: {e}")
-            return None
+        except: return None
 
-# Interfaz de carga
-uploaded_file = st.file_uploader("Subí foto o PDF", type=["jpg", "png", "jpeg", "pdf"])
+# --- INTERFAZ ---
+uploaded_file = st.file_uploader("Subí comprobante", type=["jpg", "png", "jpeg", "pdf"])
 
 if uploaded_file is not None:
-    col1, col2 = st.columns(2)
-    imagen_para_ia = None
+    # (Lógica de visualización igual que antes...)
+    if uploaded_file.type == "application/pdf":
+        images = convert_from_bytes(uploaded_file.read())
+        img = images[0]
+        st.image(img, caption='PDF', use_column_width=True)
+        uploaded_file.seek(0)
+    else:
+        img = Image.open(uploaded_file)
+        st.image(img, caption='Imagen', use_column_width=True)
 
-    with col1:
-        try:
-            if uploaded_file.type == "application/pdf":
-                images = convert_from_bytes(uploaded_file.read())
-                if images:
-                    imagen_para_ia = images[0]
-                    st.info("📄 PDF detectado.")
-                    st.image(imagen_para_ia, caption='Vista previa', use_column_width=True)
-                    uploaded_file.seek(0)
-            else:
-                imagen_para_ia = Image.open(uploaded_file)
-                st.image(imagen_para_ia, caption='Tu Comprobante', use_column_width=True)
-        except Exception as e:
-            st.error(f"Error archivo: {e}")
-
-    with col2:
-        if st.button("✨ Analizar con IA", type="primary"):
-            if imagen_para_ia:
-                datos = analizar_ticket(imagen_para_ia)
-                if datos:
-                    st.success("¡Datos extraídos!")
-                    with st.form("edit_form"):
-                        fecha = st.text_input("Fecha", value=datos.get("fecha"))
-                        monto = st.number_input("Monto", value=datos.get("monto"))
-                        
-                        idx_moneda = 0
-                        if datos.get("moneda") == "USD": idx_moneda = 1
-                        moneda = st.selectbox("Moneda", ["ARS", "USD"], index=idx_moneda)
-                        
-                        desc = st.text_input("Descripción", value=datos.get("descripcion"))
-                        
-                        cats = ["Comida", "Servicios", "Supermercado", "Transporte", "Otros"]
-                        cat_val = datos.get("categoria", "Otros")
-                        idx_cat = cats.index(cat_val) if cat_val in cats else 4
-                        cat = st.selectbox("Categoría", cats, index=idx_cat)
-                        
-                        if st.form_submit_button("💾 Guardar en Sheets"):
-                            st.info("🚧 Conexión a Sheets pendiente.")
-                            st.json(datos)
+    if st.button("✨ Analizar", type="primary"):
+        datos = analizar_ticket(img)
+        if datos:
+            st.success("¡Leído!")
+            with st.form("save_form"):
+                # Campos editables
+                col_a, col_b = st.columns(2)
+                fecha = col_a.text_input("Fecha", datos.get("fecha"))
+                monto = col_b.number_input("Monto", value=float(datos.get("monto") or 0))
+                
+                cat = st.selectbox("Categoría", ["Comida", "Servicios", "Supermercado", "Transporte", "Otros"], index=0)
+                desc = st.text_input("Descripción", datos.get("descripcion"))
+                metodo = st.selectbox("Pago", ["Efectivo", "Debito", "Credito", "MP"], index=1)
+                
+                submitted = st.form_submit_button("💾 Guardar en Google Sheets")
+                
+                if submitted:
+                    datos_finales = {
+                        "fecha": fecha, "monto": monto, "moneda": datos.get("moneda"), 
+                        "categoria": cat, "descripcion": desc, "metodo_pago": metodo
+                    }
+                    if guardar_en_sheets(datos_finales):
+                        st.balloons()
+                        st.success("✅ ¡Guardado en tu Excel!")
+                    else:
+                        st.error("Hubo un error al guardar.")
